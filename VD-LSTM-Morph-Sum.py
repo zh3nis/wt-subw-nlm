@@ -389,7 +389,11 @@ class Train(Model):
         self.morph_embedding, 
         [0], 
         tf.constant(0.0, shape=[1, config.morph_emb_dim], dtype=tf.float32))
-    
+    self.clear_morph_embedding_out_padding = tf.scatter_update(
+        self.morph_embedding_out, 
+        [0], 
+        tf.constant(0.0, shape=[1, config.morph_emb_dim], dtype=tf.float32))
+
     self.lr = tf.Variable(0.0, trainable=False, dtype=tf.float32)
     tvars = tf.trainable_variables()
     grads, _ = tf.clip_by_global_norm(tf.gradients(self.cost, tvars), 
@@ -446,6 +450,7 @@ def run_epoch(sess, model, raw_data, config, is_train=False, lr=None):
           feed_dict={model.x: my_x, model.y: batch[1], 
           model.init_state: state})
       sess.run(model.clear_morph_embedding_padding)
+      sess.run(model.clear_morph_embedding_out_padding)
     else:
       c, state = sess.run([model.cost, model.state], 
           feed_dict={model.x: my_x, model.y: batch[1], 
@@ -500,6 +505,7 @@ if __name__ == '__main__':
     with tf.Session() as sess:
       sess.run(init)
       sess.run(train.clear_morph_embedding_padding)
+      sess.run(train.clear_morph_embedding_out_padding)
       prev_valid_ppl = float('inf')
       best_valid_ppl = float('inf')
 
