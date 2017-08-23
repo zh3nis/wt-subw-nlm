@@ -52,6 +52,114 @@ class Config(object):
   reuse_hw2 = False  # do not reuse second highway
 
 
+class PTBMediumConfig(object):
+  # Global hyperparameters
+  batch_size = 20
+  max_grad_norm = 5
+  lr_decay = 0.90
+  learning_rate = 0.7
+  init_scale = 0.05
+  num_epochs = 70
+  max_epoch = 10
+  word_vocab_size = 0 # to be determined later
+
+  # LSTM hyperparameters
+  num_steps = 35
+  hidden_size = 650
+  num_layers = 2
+  drop_x = 0.0
+  drop_i = 0.0
+  drop_h = 0.5
+  drop_o = 0.5
+
+  # Morpheme embedding hyperparameters
+  morph_vocab_size = 0 # to be determined later
+  morph_emb_dim = 650
+  highway_size = 650
+  max_word_len = 0   # to be determined later
+    
+  # Sampled softmax (SSM) hyperparameters
+  ssm = 0            # do not use SSM by default
+  num_sampled = 0    # to be determined later
+  
+  #Reusing options
+  reuse_emb = True   # reuse embedding layer
+  reuse_hw1 = True   # reuse first highway
+  reuse_hw2 = False  # do not reuse second highway
+
+
+class WT2SmallConfig(object):
+  # Global hyperparameters
+  batch_size = 20
+  max_grad_norm = 5
+  lr_decay = 0.90
+  learning_rate = 0.7
+  init_scale = 0.1
+  num_epochs = 70
+  max_epoch = 10
+  word_vocab_size = 0 # to be determined later
+
+  # LSTM hyperparameters
+  num_steps = 35
+  hidden_size = 200
+  num_layers = 2
+  drop_x = 0.0
+  drop_i = 0.0
+  drop_h = 0.2
+  drop_o = 0.2
+
+  # Morpheme embedding hyperparameters
+  morph_vocab_size = 0 # to be determined later
+  morph_emb_dim = 200
+  highway_size = 200
+  max_word_len = 0   # to be determined later
+    
+  # Sampled softmax (SSM) hyperparameters
+  ssm = 0            # do not use SSM by default
+  num_sampled = 0    # to be determined later
+  
+  #Reusing options
+  reuse_emb = True   # reuse embedding layer
+  reuse_hw1 = True   # reuse first highway
+  reuse_hw2 = False  # do not reuse second highway
+
+
+class WT2MediumConfig(object):
+  # Global hyperparameters
+  batch_size = 20
+  max_grad_norm = 5
+  lr_decay = 0.90
+  learning_rate = 0.7
+  init_scale = 0.05
+  num_epochs = 70
+  max_epoch = 10
+  word_vocab_size = 0 # to be determined later
+
+  # LSTM hyperparameters
+  num_steps = 35
+  hidden_size = 650
+  num_layers = 2
+  drop_x = 0.0
+  drop_i = 0.0
+  drop_h = 0.4
+  drop_o = 0.4
+
+  # Morpheme embedding hyperparameters
+  morph_vocab_size = 0 # to be determined later
+  morph_emb_dim = 650
+  highway_size = 650
+  max_word_len = 0   # to be determined later
+    
+  # Sampled softmax (SSM) hyperparameters
+  ssm = 0            # do not use SSM by default
+  num_sampled = 0    # to be determined later
+  
+  #Reusing options
+  reuse_emb = True   # reuse embedding layer
+  reuse_hw1 = True   # reuse first highway
+  reuse_hw2 = False  # do not reuse second highway
+
+
 def parse_args():
   '''Parse command line arguments'''
   parser = argparse.ArgumentParser(formatter_class=
@@ -264,7 +372,7 @@ class Model:
     lstm_input = tf.unstack(highw_output_reshaped, axis=1)
     # basic LSTM cell
     def lstm_cell():
-      return tf.contrib.rnn.core_rnn_cell.LSTMCell(hidden_size, 
+      return tf.nn.rnn_cell.LSTMCell(hidden_size, 
                                                    forget_bias=1.0,
                                                    reuse=need_reuse)
     cells = []
@@ -290,7 +398,7 @@ class Model:
                                             dtype=tf.float32))
         else:
           cells.append(lstm_cell())
-    self.cell = tf.contrib.rnn.core_rnn_cell.MultiRNNCell(cells)
+    self.cell = tf.nn.rnn_cell.MultiRNNCell(cells)
     
     self.init_state = self.cell.zero_state(batch_size, dtype=tf.float32)
     with tf.variable_scope('lstm_rnn', reuse=need_reuse):
