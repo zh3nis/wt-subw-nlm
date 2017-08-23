@@ -259,9 +259,9 @@ class Model:
     lstm_input = tf.unstack(highw_output_reshaped, axis=1)
     # basic LSTM cell
     def lstm_cell():
-      return tf.contrib.rnn.core_rnn_cell.LSTMCell(hidden_size, 
-                                                   forget_bias=1.0,
-                                                   reuse=need_reuse)
+      return tf.nn.rnn_cell.LSTMCell(hidden_size, 
+                                     forget_bias=1.0,
+                                     reuse=need_reuse)
     cells = []
     for i in range(num_layers):
       with tf.variable_scope('layer' + str(i)):
@@ -285,7 +285,7 @@ class Model:
                                             dtype=tf.float32))
         else:
           cells.append(lstm_cell())
-    self.cell = tf.contrib.rnn.core_rnn_cell.MultiRNNCell(cells)
+    self.cell = tf.nn.rnn_cell.MultiRNNCell(cells)
     
     self.init_state = self.cell.zero_state(batch_size, dtype=tf.float32)
     with tf.variable_scope('lstm_rnn', reuse=need_reuse):
