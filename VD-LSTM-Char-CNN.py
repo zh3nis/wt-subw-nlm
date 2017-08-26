@@ -20,10 +20,10 @@ class Config(object):
   batch_size = 20
   max_grad_norm = 5
   lr_decay = 0.90
-  learning_rate = 0.7
+  learning_rate = 0.5
   init_scale = 0.1
   num_epochs = 70
-  max_epoch = 10
+  max_epoch = 12
   word_vocab_size = 0 # to be determined later
 
   # LSTM hyperparameters
@@ -35,11 +35,14 @@ class Config(object):
   drop_h = 0.3
   drop_o = 0.3
 
-  # syleme embedding hyperparameters
-  syl_vocab_size = 0 # to be determined later
-  syl_emb_dim = 50
-  highway_size = 200
+  # Syllable embedding hyperparameters
+  char_vocab_size = 0 # to be determined later
+  char_emb_dim = 15
   max_word_len = 0   # to be determined later
+  filter_widths = list(range(1, 7))
+  filters_per_width = {w: 25 * w for w in filter_widths} #{w: min(50 * w, 200) for w in filter_widths}
+  cnn_output_dim = sum([filters for w, filters in filters_per_width.items()])
+  highway_size = cnn_output_dim
     
   # Sampled softmax (SSM) hyperparameters
   ssm = 0            # do not use SSM by default
@@ -47,6 +50,7 @@ class Config(object):
   
   #Reusing options
   reuse_emb = True   # reuse embedding layer
+  reuse_cnn = True   # reuse CNN layer
   reuse_hw1 = True   # reuse first highway
   reuse_hw2 = False  # do not reuse second highway
 
@@ -64,9 +68,9 @@ def parse_args():
                            '/test.txt with input data')
   parser.add_argument('--save_dir', default='saves',
                       help='saves directory')
-  parser.add_argument('--prefix', default='VD-LSTM-Syl-Concat',
+  parser.add_argument('--prefix', default='VD-LSTM-Char-CNN',
                       help='prefix for filenames when saving data and model')
-  parser.add_argument('--eos', default='<eos>',
+  parser.add_argument('--eos', default='☭',
                       help='EOS marker')
   parser.add_argument('--ssm', default='0',
                       help='sampled softmax. 1 = yes, 0 = no')
@@ -74,6 +78,8 @@ def parse_args():
                       help='print intermediate results. 1 = yes, 0 = no')
   parser.add_argument('--remb', default='1',
                       help='reuse embedding layer. 1 = yes, 0 = no')
+  parser.add_argument('--rcnn', default='1',
+                      help='reuse CNN layer. 1 = yes, 0 = no')
   parser.add_argument('--rhw1', default='1',
                       help='reuse first highway layer. 1 = yes, 0 = no')
   parser.add_argument('--rhw2', default='0',
@@ -87,8 +93,8 @@ def read_data(args, config):
   
   hyphenator = Pyphen(lang=args.lang)
 
-  def my_syllables(word):
-    return hyphenator.inserted(word).split('-')
+  def my_characters(word):
+    return ['⎡'] + list(word) + ['⎦']
 
   if args.is_train == '1':
     if not os.path.exists(args.save_dir):
@@ -99,23 +105,23 @@ def read_data(args, config):
                   .replace('\n', args.eos).split()
       words = list(set(word_data))
       
-      syllables = set()
-      word_lens_in_syl = []
+      characters = set()
+      word_lens_in_char = []
 
       for word in words:
-        syls = my_syllables(word)
-        word_lens_in_syl.append(len(syls))
-        for syl in syls:
-          syllables.add(syl)
+        chars = my_characters(word)
+        word_lens_in_char.append(len(chars))
+        for char in chars:
+          characters.add(char)
 
-      syls_list = list(syllables)
+      chars_list = list(characters)
       pickle.dump(
-          (word_data, words, word_lens_in_syl, syls_list), data_file)
+          (word_data, words, word_lens_in_char, chars_list), data_file)
 
   else:
     with open(os.path.join(
         args.save_dir, args.prefix + '-data.pkl'), 'rb') as data_file:
-      word_data, words, word_lens_in_syl, syls_list = \
+      word_data, words, word_lens_in_char, chars_list = \
           pickle.load(data_file)
 
   word_data_size, word_vocab_size = len(word_data), len(words)
@@ -134,30 +140,30 @@ def read_data(args, config):
   valid_raw_data = get_word_raw_data(os.path.join(args.data_dir, 'valid.txt'))
   test_raw_data = get_word_raw_data(os.path.join(args.data_dir, 'test.txt'))
 
-  syl_vocab_size = len(syls_list)
-  max_word_len = int(np.percentile(word_lens_in_syl, 100))
+  char_vocab_size = len(chars_list)
+  max_word_len = int(np.percentile(word_lens_in_char, 100))
   config.max_word_len = max_word_len
-  print('data has %d unique syls' % syl_vocab_size)
-  print('max word length in syls is set to', max_word_len)
+  print('data has %d unique chars' % char_vocab_size)
+  print('max word length in chars is set to', max_word_len)
 
-  # a fake syleme for zero-padding
-  zero_pad_syl = ' '
-  syls_list.insert(0, zero_pad_syl)
-  syl_vocab_size += 1
-  config.syl_vocab_size = syl_vocab_size
+  # a fake character for zero-padding
+  zero_pad_char = ' '
+  chars_list.insert(0, zero_pad_char)
+  char_vocab_size += 1
+  config.char_vocab_size = char_vocab_size
 
-  syl_to_ix = { syl:i for i,syl in enumerate(syls_list) }
-  ix_to_syl = { i:syl for i,syl in enumerate(syls_list) }
+  char_to_ix = { char:i for i,char in enumerate(chars_list) }
+  ix_to_char = { i:char for i,char in enumerate(chars_list) }
 
-  word_ix_to_syl_ixs = {}
+  word_ix_to_char_ixs = {}
   for word in words:
     word_ix = word_to_ix[word]
-    word_in_syls = my_syllables(word)
-    word_in_syls += [zero_pad_syl] * (max_word_len - len(word_in_syls))
-    word_ix_to_syl_ixs[word_ix] = \
-        [syl_to_ix[syl] for syl in word_in_syls]
+    word_in_chars = my_characters(word)
+    word_in_chars += [zero_pad_char] * (max_word_len - len(word_in_chars))
+    word_ix_to_char_ixs[word_ix] = \
+        [char_to_ix[char] for char in word_in_chars]
 
-  return train_raw_data, valid_raw_data, test_raw_data, word_ix_to_syl_ixs
+  return train_raw_data, valid_raw_data, test_raw_data, word_ix_to_char_ixs
 
 
 class batch_producer(object):
@@ -191,17 +197,17 @@ class batch_producer(object):
 
 
 class Model:
-  '''syleme-aware language model'''
-  def __init__(self, config, word_ix_to_syl_ixs, need_reuse=False):
+  '''chareme-aware language model'''
+  def __init__(self, config, word_ix_to_char_ixs, need_reuse=False):
     # get hyperparameters
     batch_size = config.batch_size
     num_steps = config.num_steps
     self.max_word_len = max_word_len = config.max_word_len
-    self.syl_emb_dim = syl_emb_dim = config.syl_emb_dim
+    self.char_emb_dim = char_emb_dim = config.char_emb_dim
     self.highway_size = highway_size = config.highway_size
     self.init_scale = init_scale = config.init_scale
     num_sampled = config.num_sampled
-    syl_vocab_size = config.syl_vocab_size
+    char_vocab_size = config.char_vocab_size
     hidden_size = config.hidden_size
     num_layers = config.num_layers
     word_vocab_size = config.word_vocab_size
@@ -209,42 +215,48 @@ class Model:
     drop_i = config.drop_i
     drop_h = config.drop_h
     drop_o = config.drop_o
+    filter_widths = config.filter_widths
+    filters_per_width = config.filters_per_width
+    cnn_output_dim = config.cnn_output_dim
 
-    # syllable embedding matrix
-    with tf.variable_scope('syl_emb', reuse=need_reuse):
-      self.syl_embedding = tf.get_variable("syl_embedding", 
-        [syl_vocab_size, syl_emb_dim], dtype=tf.float32)
+    # charlable embedding matrix
+    with tf.variable_scope('char_emb', reuse=need_reuse):
+      self.char_embedding = tf.get_variable("char_embedding", 
+        [char_vocab_size, char_emb_dim], dtype=tf.float32)
     
     # placeholders for training data and labels
     self.x = tf.placeholder(tf.int32, [batch_size, num_steps, max_word_len])
     self.y = tf.placeholder(tf.int32, [batch_size, num_steps])
     y_float = tf.cast(self.y, tf.float32)
     
-    # we first embed sylemes ...
-    words_embedded = tf.nn.embedding_lookup(self.syl_embedding, self.x)
-    words_embedded_unrolled = tf.unstack(words_embedded, axis=1)
+    # we first embed characters ...
+    words_embedded = tf.nn.embedding_lookup(self.char_embedding, self.x)
+    words_embedded = tf.reshape(words_embedded, [-1, max_word_len, char_emb_dim])
     
-    # ... and then concatenate them to obtain word vectors
-    words_list = []    
-    for word in words_embedded_unrolled:
-      syls = tf.unstack(word, axis=1)
-      syls_concat = tf.concat(axis=1, values=syls)
-      words_list.append(syls_concat)
-    
-    words_packed_reshaped = tf.reshape(tf.stack(words_list, axis=1), 
-                                       [-1, max_word_len * syl_emb_dim])
-    
-    # we project word vectors to match the dimensionality of 
-    # the highway layer
-    with tf.variable_scope('projection', reuse=need_reuse):
-      proj_w = tf.get_variable('proj_w', 
-        [max_word_len * syl_emb_dim, highway_size],
-        dtype=tf.float32)
-    words_packed_reshaped_proj = tf.matmul(words_packed_reshaped, proj_w)
+    def conv_layer(cur_char_inputs, filt_shape, bias_shape):
+      new_filt_shape = [1, 1] + filt_shape
+      filt = tf.get_variable('filt', new_filt_shape)
+      bias = tf.get_variable('bias', bias_shape)
+      cur_char_inputs = tf.expand_dims(tf.expand_dims(cur_char_inputs, 1), 1)
+      conv = tf.nn.conv3d(cur_char_inputs, filt, [1, 1, 1, 1, 1], padding='VALID')
+      feature_map = tf.nn.tanh(conv + bias)
+      feature_map_reshaped = tf.squeeze(feature_map, axis=1)
+      pool = tf.nn.max_pool(feature_map_reshaped, [1, 1, max_word_len - filt_shape[0] + 1, 1], [1, 1, 1, 1], 'VALID')
+      return(tf.squeeze(pool, axis=[1,2]))
+
+    def words_filter(cur_char_inputs):
+      pools = []
+      for w in filter_widths:
+        with tf.variable_scope('filter' + str(w)):
+          pools.append(conv_layer(cur_char_inputs, [w, char_emb_dim, filters_per_width[w]], [filters_per_width[w]]))
+      return tf.concat(axis=1, values=pools)
+       
+    with tf.variable_scope('cnn_output', reuse=need_reuse) as scope:
+      cnn_output = tf.reshape(words_filter(words_embedded), [-1, cnn_output_dim])
     
     # we feed the word vector into a stack of two HW layers ...
     with tf.variable_scope('highway1', reuse=need_reuse):
-      highw1_output = self.highway_layer(words_packed_reshaped_proj)
+      highw1_output = self.highway_layer(cnn_output)
     
     with tf.variable_scope('highway2', reuse=need_reuse):
       highw2_output = self.highway_layer(highw1_output)
@@ -298,38 +310,42 @@ class Model:
 
     # finally we predict the next word according to a softmax normalization
     if config.reuse_emb:
-      self.syl_embedding_out = self.syl_embedding
-      proj_w_out = proj_w
+      self.char_embedding_out = self.char_embedding
     with tf.variable_scope('softmax_params', reuse=need_reuse):
       if highway_size != hidden_size:
         proj2_w_out = tf.get_variable('proj2_w_out', 
-            [highway_size, hidden_size], dtype=tf.float32)
-      if not config.reuse_emb:
-        self.syl_embedding_out = tf.get_variable("syl_embedding_out", 
-            [syl_vocab_size, syl_emb_dim], dtype=tf.float32)
-        proj_w_out = tf.get_variable('proj_w_out', 
-            [max_word_len * syl_emb_dim, highway_size], dtype=tf.float32)
+          [highway_size, hidden_size],
+          dtype=tf.float32)
       biases = tf.get_variable('biases', [word_vocab_size], dtype=tf.float32)
-    
-    words_in_syls = []
-    for word_ix in range(word_vocab_size):
-      words_in_syls.append(word_ix_to_syl_ixs[word_ix])
-    words_in_syls_embedded = tf.nn.embedding_lookup(
-        self.syl_embedding_out, words_in_syls)
-    syls = tf.unstack(words_in_syls_embedded, axis=1)
-    weights_full = tf.concat(syls, axis=1)
-    weights_proj = tf.matmul(weights_full, proj_w_out)
-    with tf.variable_scope('highway1' if config.reuse_hw1 else 'highway1_out', 
-                           reuse=config.reuse_hw1 or need_reuse):
-      weights_highw1_output = self.highway_layer(weights_proj)
-    with tf.variable_scope('highway2' if config.reuse_hw2 else 'highway2_out', 
-                           reuse=config.reuse_hw2 or need_reuse):
-      weights_highw2_output = self.highway_layer(weights_highw1_output)
-    if highway_size != hidden_size:
-      weights = tf.matmul(weights_highw2_output, proj2_w_out)
-    else:
-      weights = weights_highw2_output
-    
+
+    slice_num = word_vocab_size // 1000
+    for i in range(slice_num):
+      word_in_chars = []
+      a = i * 1000
+      b = i * 1000 + 1000 if i != slice_num - 1 else word_vocab_size
+      for word_ix in range(a, b):
+        word_in_chars.append(word_ix_to_char_ixs[word_ix])
+      word_in_chars_embedded = tf.nn.embedding_lookup(self.char_embedding_out, word_in_chars)
+      with tf.variable_scope('cnn_output' if config.reuse_cnn else 'cnn_output_out', 
+                             reuse=config.reuse_cnn or (i > 0) or need_reuse):
+        weight_full = words_filter(word_in_chars_embedded)
+      with tf.variable_scope('highway1' if config.reuse_hw1 else 'highway1_out', 
+                             reuse=config.reuse_hw1 or (i > 0) or need_reuse):
+        weight_highw1_output = self.highway_layer(weight_full)
+      with tf.variable_scope('highway2' if config.reuse_hw2 else 'highway2_out', 
+                             reuse=config.reuse_hw2 or (i > 0) or need_reuse):
+        weight_highw2_output = self.highway_layer(weight_highw1_output)
+      if highway_size != hidden_size:
+        weight = tf.matmul(weight_highw2_output, proj2_w_out)
+      else:
+        weight = weight_highw2_output
+      if i == 0:
+        weights = weight
+      else:
+        weights = tf.concat(values=[weights, weight], axis=0)
+      del word_in_chars[:]    
+    self.weights = weights  
+        
     # and compute the cross-entropy between labels and predictions
     if config.ssm == 1 and not need_reuse:
       loss = tf.nn.sampled_softmax_loss(weights, biases, 
@@ -376,16 +392,16 @@ class Model:
 
 class Train(Model):
   '''for training we need to compute gradients'''
-  def __init__(self, config, word_ix_to_syl_ixs):
-    super(Train, self).__init__(config, word_ix_to_syl_ixs)
-    self.clear_syl_embedding_padding = tf.scatter_update(
-        self.syl_embedding, 
+  def __init__(self, config, word_ix_to_char_ixs):
+    super(Train, self).__init__(config, word_ix_to_char_ixs)
+    self.clear_char_embedding_padding = tf.scatter_update(
+        self.char_embedding, 
         [0], 
-        tf.constant(0.0, shape=[1, config.syl_emb_dim], dtype=tf.float32))
-    self.clear_syl_embedding_out_padding = tf.scatter_update(
-        self.syl_embedding_out, 
+        tf.constant(0.0, shape=[1, config.char_emb_dim], dtype=tf.float32))
+    self.clear_char_embedding_out_padding = tf.scatter_update(
+        self.char_embedding_out, 
         [0], 
-        tf.constant(0.0, shape=[1, config.syl_emb_dim], dtype=tf.float32))
+        tf.constant(0.0, shape=[1, config.char_emb_dim], dtype=tf.float32))
 
     self.lr = tf.Variable(0.0, trainable=False, dtype=tf.float32)
     tvars = tf.trainable_variables()
@@ -431,10 +447,10 @@ def run_epoch(sess, model, raw_data, config, is_train=False, lr=None):
         [config.batch_size, config.num_steps, config.max_word_len], 
         dtype=np.int32)
 
-    # split words into sylemes
+    # split words into charemes
     for t in range(config.num_steps):
       for i in range(config.batch_size):
-        my_x[i, t] = word_ix_to_syl_ixs[batch[0][i, t]]
+        my_x[i, t] = word_ix_to_char_ixs[batch[0][i, t]]
 
     # run the model on current batch
     if is_train:
@@ -442,8 +458,8 @@ def run_epoch(sess, model, raw_data, config, is_train=False, lr=None):
           [model.train_op, model.cost, model.state],
           feed_dict={model.x: my_x, model.y: batch[1], 
           model.init_state: state})
-      sess.run(model.clear_syl_embedding_padding)
-      #sess.run(model.clear_syl_embedding_out_padding)
+      sess.run(model.clear_char_embedding_padding)
+      #sess.run(model.clear_char_embedding_out_padding)
     else:
       c, state = sess.run([model.cost, model.state], 
           feed_dict={model.x: my_x, model.y: batch[1], 
@@ -468,25 +484,26 @@ if __name__ == '__main__':
   args = parse_args()
   initializer = tf.random_uniform_initializer(-config.init_scale,
                                               config.init_scale) 
-  train_raw_data, valid_raw_data, test_raw_data, word_ix_to_syl_ixs \
+  train_raw_data, valid_raw_data, test_raw_data, word_ix_to_char_ixs \
       = read_data(args, config)
   config.reuse_emb = bool(int(args.remb))
+  config.reuse_cnn = bool(int(args.rcnn))
   config.reuse_hw1 = bool(int(args.rhw1))
   config.reuse_hw2 = bool(int(args.rhw2))
 
   with tf.variable_scope('Model', reuse=False, initializer=initializer):
-    train = Train(config, word_ix_to_syl_ixs)
+    train = Train(config, word_ix_to_char_ixs)
   print('Model size is: ', model_size())
 
   with tf.variable_scope('Model', reuse=True, initializer=initializer):
-    valid = Model(config, word_ix_to_syl_ixs, need_reuse=True)
+    valid = Model(config, word_ix_to_char_ixs, need_reuse=True)
 
   test_config = copy.deepcopy(config)
   test_config.batch_size = 1
   test_config.ssm = 0
   test_config.num_steps = 1
   with tf.variable_scope('Model', reuse=True, initializer=initializer):
-    test = Model(test_config, word_ix_to_syl_ixs, need_reuse=True)
+    test = Model(test_config, word_ix_to_char_ixs, need_reuse=True)
 
   saver = tf.train.Saver()
 
@@ -497,8 +514,8 @@ if __name__ == '__main__':
 
     with tf.Session() as sess:
       sess.run(init)
-      sess.run(train.clear_syl_embedding_padding)
-      #sess.run(train.clear_syl_embedding_out_padding)
+      sess.run(train.clear_char_embedding_padding)
+      #sess.run(train.clear_char_embedding_out_padding)
       prev_valid_ppl = float('inf')
       best_valid_ppl = float('inf')
 
