@@ -316,6 +316,9 @@ class Model:
         proj2_w_out = tf.get_variable('proj2_w_out', 
           [highway_size, hidden_size],
           dtype=tf.float32)
+      if not config.reuse_emb:
+        self.char_embedding_out = tf.get_variable("char_embedding_out", 
+          [char_vocab_size, char_emb_dim], dtype=tf.float32)
       biases = tf.get_variable('biases', [word_vocab_size], dtype=tf.float32)
 
     slice_num = word_vocab_size // 1000
